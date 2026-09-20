@@ -13,6 +13,7 @@ This is an adaptation of [Carlos Olmos's MacroPad Jukebox](https://github.com/ca
 | Key 5 | Go to parent folder |
 | Key 6 | Play every audio file in the selected folder, or the current folder |
 | Key 4 | Toggle folder browser and now playing screen |
+| Hold key 7 | Show the PiPod web address; release to return |
 | Keys 1, 2, 3 | Play, pause, stop |
 | Keys 9, 12 | Volume up, down |
 | Keys 10, 11 | Previous, next track |
@@ -22,10 +23,10 @@ The 3×4 key layout follows the numbered physical keys:
 | 1 Play | 2 Pause | 3 Stop |
 | --- | --- | --- |
 | 4 Screen | 5 Back | 6 Play Folder |
-| 7 Spare | 8 Select | 9 Volume Up |
+| 7 Hold: Web Address | 8 Select | 9 Volume Up |
 | 10 Previous | 11 Next | 12 Volume Down |
 
-The keys light up by action: Play green, Pause yellow, Stop red, screen toggle purple, Previous and Next blue, Volume Down and Up orange, Select and Play Folder teal, and Back grey. Key 7 is unlit.
+The keys light up by action: Play green, Pause yellow, Stop red, screen toggle and web address purple, Previous and Next blue, Volume Down and Up orange, Select and Play Folder teal, and Back grey.
 The Play key gently pulses while audio is playing and stays steady when paused or stopped.
 
 The now playing screen displays the embedded track title when present, falling back to the filename, plus playback state, elapsed and total time, and VLC volume. Folder navigation includes the path, selection, and item count. Audio formats recognized: MP3, FLAC, M4A, AAC, OGG, Opus, WAV, AIFF, WMA. VLC must have a decoder for the particular file.

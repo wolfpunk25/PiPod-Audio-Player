@@ -17,6 +17,7 @@ pad.pixels[2] = 0xAA2222  # stop
 pad.pixels[3] = 0x6633AA  # now playing
 pad.pixels[4] = 0x666666  # back
 pad.pixels[5] = 0x008888  # play folder
+pad.pixels[6] = 0x6633AA  # hold to show web address
 pad.pixels[7] = 0x008888  # select
 pad.pixels[8] = 0x884400  # louder
 pad.pixels[9] = 0x2244AA  # previous
@@ -38,6 +39,7 @@ encoder = pad.encoder
 last_draw = 0
 held_keys = set()
 last_play_color = None
+show_address = False
 
 
 def send(command):
@@ -69,7 +71,16 @@ def update_play_light():
 
 
 def draw():
-    if state is None:
+    if show_address:
+        url = state.get("web_url", "") if state else ""
+        if url and "://" in url and ":" in url.split("://", 1)[1]:
+            scheme, address = url.split("://", 1)
+            host, port = address.rsplit(":", 1)
+            values = ["WEB ADDRESS", scheme + "://", clip(host), clip(":" + port),
+                      "", "Release 7: back"]
+        else:
+            values = ["WEB ADDRESS", "Waiting for Pi...", "", "", "", "Release 7: back"]
+    elif state is None:
         values = ["PIPOD AUDIO", "Waiting for Pi...", "", "", "", ""]
     elif state.get("type") == "browse":
         values = ["BROWSE", clip(state.get("path", "/")),
@@ -81,7 +92,7 @@ def draw():
                   clip(state.get("state", "")),
                   "%s / %s" % (clock(state.get("elapsed", 0)), clock(state.get("length", 0))),
                   "Vol: %s" % state.get("volume", 0), "4: folders 9/12:vol"]
-    if state and state.get("error"):
+    if not show_address and state and state.get("error"):
         values[5] = clip(state["error"])
     for line, value in zip(lines, values):
         line.text = clip(value)
@@ -95,6 +106,9 @@ while True:
         key = event.key_number
         if event.pressed and key not in held_keys:
             held_keys.add(key)
+            if key == 6:
+                show_address = True
+                draw()
             commands = {0: "play", 1: "pause", 2: "stop", 3: "now",
                         4: "back", 5: "play_folder", 7: "select",
                         8: "volup", 9: "prev", 10: "next", 11: "voldown"}
@@ -102,6 +116,9 @@ while True:
                 send(commands[key])
         elif event.released:
             held_keys.discard(key)
+            if key == 6:
+                show_address = False
+                draw()
     position = pad.encoder
     if position != encoder:
         direction = "down" if position > encoder else "up"

@@ -191,7 +191,7 @@ class PiPod:
         return self.now() if self.screen == "now" else self.browse()
 
 
-def serial_worker(jukebox, serial_path=None):
+def serial_worker(jukebox, serial_path=None, web_url=""):
     from serial import Serial
     from serial.tools import list_ports
     while True:
@@ -217,6 +217,7 @@ def serial_worker(jukebox, serial_path=None):
                             jukebox.action(action)
                     if time.monotonic() >= refresh or line:
                         state = jukebox.display()
+                        state["web_url"] = web_url
                         encoded = (json.dumps(state, ensure_ascii=True, separators=(",", ":")) + "\n").encode()
                         if encoded != last:
                             serial.write(encoded)
@@ -372,7 +373,8 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     player = VLC()
     jukebox = PiPod(args.music, player)
-    threading.Thread(target=serial_worker, args=(jukebox, args.serial), daemon=True).start()
+    web_url = f"http://{args.bind}:{args.port}/"
+    threading.Thread(target=serial_worker, args=(jukebox, args.serial, web_url), daemon=True).start()
     server = ThreadingHTTPServer((args.bind, args.port), make_handler(jukebox, args.token))
     LOG.info("web uploads available on %s:%d; music root %s", args.bind, args.port, jukebox.root)
     server.serve_forever()
