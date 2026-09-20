@@ -1,0 +1,17 @@
+[Unit]
+Description=PiPod Audio Player
+After=pipod-vlc.service
+Wants=pipod-vlc.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/pipod-audio-player
+EnvironmentFile=%h/pipod-audio-player/pipod.env
+ExecStart=/usr/bin/python3 %h/pipod-audio-player/pi/pipod.py
+StandardOutput=append:%h/pipod-audio-player/pipod.log
+StandardError=append:%h/pipod-audio-player/pipod.log
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

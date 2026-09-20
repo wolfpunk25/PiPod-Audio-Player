@@ -1,0 +1,5 @@
+backups/
+__pycache__/
+*.pyc
+pipod.env
+.DS_Store

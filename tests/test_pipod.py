@@ -1,0 +1,92 @@
+import http.client
+import json
+import tempfile
+import threading
+import unittest
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+
+from pi.pipod import PiPod, entries, inside, make_handler
+
+
+class FakeVLC:
+    def __init__(self):
+        self.commands = []
+
+    def call(self, command):
+        self.commands.append(command)
+        return {"status": "( state playing )\n( new input: file:///Music/Track.mp3 )",
+                "is_playing": "1", "get_time": "25", "get_length": "100",
+                "volume": "volume: 256"}.get(command, "")
+
+
+class PiPodTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "Album").mkdir()
+        (self.root / "Album" / "Track.mp3").write_bytes(b"sample")
+        (self.root / "ignored.txt").write_text("not audio")
+        self.vlc = FakeVLC()
+        self.jukebox = PiPod(self.root, self.vlc)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_navigation_and_playback(self):
+        self.assertEqual([p.name for p in entries(self.root)], ["Album"])
+        self.jukebox.action("select")
+        self.assertEqual(self.jukebox.browse()["name"], "Track.mp3")
+        self.jukebox.action("select")
+        self.assertEqual(self.jukebox.screen, "now")
+        self.assertEqual(self.vlc.commands[0], "clear")
+        self.assertTrue(self.vlc.commands[1].startswith("add file://"))
+        self.assertEqual(self.jukebox.now()["title"], "Track")
+        self.jukebox.action("back")
+        self.assertEqual(self.jukebox.browse()["name"], "Album")
+
+    def test_path_cannot_escape_music(self):
+        with self.assertRaises(ValueError):
+            inside(self.root, "../elsewhere")
+        outside = self.root.parent / "outside.mp3"
+        (self.root / "link.mp3").symlink_to(outside)
+        self.assertEqual([p.name for p in entries(self.root)], ["Album"])
+
+    def test_now_playing_toggle(self):
+        self.assertEqual(self.jukebox.display()["type"], "browse")
+        self.jukebox.action("now")
+        self.assertEqual(self.jukebox.display()["type"], "now")
+        self.jukebox.action("now")
+        self.assertEqual(self.jukebox.display()["type"], "browse")
+
+    def test_authenticated_upload_and_directory_creation(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.jukebox, "0123456789abcdef"))
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_port)
+            conn.request("GET", "/api/list?path=")
+            self.assertEqual(conn.getresponse().status, 401)
+            headers = {"Authorization": "Bearer 0123456789abcdef"}
+            conn.request("POST", "/api/mkdir?path=&name=New", headers=headers)
+            self.assertEqual(conn.getresponse().status, 201)
+            conn.request("POST", "/api/upload?path=New&name=Song.mp3", body=b"music", headers=headers)
+            self.assertEqual(conn.getresponse().status, 201)
+            self.assertEqual((self.root / "New" / "Song.mp3").read_bytes(), b"music")
+            conn.request("POST", "/api/upload?path=New&name=Song.mp3", body=b"replacement", headers=headers)
+            self.assertEqual(conn.getresponse().status, 400)
+            self.assertEqual((self.root / "New" / "Song.mp3").read_bytes(), b"music")
+            conn.request("POST", "/api/upload?path=..%2F..&name=bad.mp3", body=b"music", headers=headers)
+            self.assertEqual(conn.getresponse().status, 400)
+            conn.request("GET", "/api/list?path=New", headers=headers)
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read())["items"][0]["name"], "Song.mp3")
+            conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+if __name__ == "__main__":
+    unittest.main()

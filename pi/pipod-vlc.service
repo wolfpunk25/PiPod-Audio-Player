@@ -1,0 +1,14 @@
+[Unit]
+Description=PiPod Audio Player VLC
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+ExecStart=/usr/bin/cvlc --intf dummy --extraintf rc --rc-host 127.0.0.1:8888 --aout=alsa --alsa-audio-device=plughw:CARD=Headphones,DEV=0 --no-video --no-one-instance
+StandardOutput=append:%h/pipod-audio-player/vlc.log
+StandardError=append:%h/pipod-audio-player/vlc.log
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
