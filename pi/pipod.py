@@ -163,9 +163,16 @@ class PiPod:
                 self.error = str(exc)[:40]
 
     def play_path(self, path):
-        tracks = ([path] if path.is_file() else sorted(
-            (p for p in path.rglob("*") if p.is_file() and p.suffix.lower() in AUDIO),
-            key=lambda p: str(p).casefold()))
+        path = path.resolve()
+        if path.is_file():
+            # Selecting one song still needs the rest of its album for skip keys.
+            tracks = [p for p in entries(path.parent) if p.is_file()]
+            selected_index = tracks.index(path)
+        else:
+            tracks = sorted(
+                (p for p in path.rglob("*") if p.is_file() and p.suffix.lower() in AUDIO),
+                key=lambda p: str(p).casefold())
+            selected_index = 0
         if not tracks:
             raise ValueError("No audio files in this folder")
         self.save_progress()
@@ -174,7 +181,19 @@ class PiPod:
         playlist.write_text("#EXTM3U\n" + "\n".join(p.as_uri() for p in tracks) + "\n")
         self.vlc.call("clear")
         self.vlc.call("add " + playlist.as_uri())
-        self.resume_current()
+        if selected_index:
+            for _ in range(10):
+                # VLC uses playlist IDs for `goto`, not the zero-based file index.
+                listing = self.vlc.call("playlist")
+                ids = [int(match.group(1)) for line in listing.splitlines()
+                       if (match := re.match(r"^\| {2,}\*?(\d+) - ", line))]
+                if len(ids) == len(tracks):
+                    self.vlc.call("goto " + str(ids[selected_index]))
+                    break
+                time.sleep(0.1)
+            else:
+                raise ValueError("VLC could not load the album playlist")
+        self.resume_current(expected=tracks[selected_index])
         self.screen = "now"
 
     def track_title(self, path):
@@ -264,12 +283,12 @@ class PiPod:
                 del self.bookmarks[key]
                 self._write_bookmarks()
 
-    def resume_current(self, previous=None):
+    def resume_current(self, previous=None, expected=None):
         if not self.bookmarks:
             return
         for _ in range(6):
             path = self.current_track()
-            if path is not None and path != previous:
+            if path is not None and path != previous and (expected is None or path == expected):
                 seconds = self.bookmarks.get(str(path.relative_to(self.root)), 0)
                 if seconds and seconds < self.media_details(path)["duration"] - 30:
                     self.vlc.call("seek " + str(seconds))

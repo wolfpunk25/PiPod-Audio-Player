@@ -33,6 +33,8 @@ The now playing screen displays the embedded track title when present, falling b
 
 For files longer than ten minutes, PiPod saves playback position every 15 seconds and when you pause, stop, or switch tracks. Selecting a saved file resumes from that point. The positions are stored in `~/Music/.pipod-positions.json` and survive a Pi restart. Keys 10 and 11 move between embedded chapters when the current file has them; otherwise they move between playlist tracks. At the first or last chapter, they move to the previous or next playlist track. PiPod clears a saved position near the end of a file so a completed book starts at the beginning.
 
+Selecting a song loads the other audio files in the same folder in filename order, starting at the selected song. Previous and Next then move through that folder. Playing a folder includes audio files in its subfolders.
+
 ## Pi setup
 
 1. Connect the MacroPad directly to the Pi with a data-capable USB cable. Connect the Pi's audio output to a speaker or headphones.

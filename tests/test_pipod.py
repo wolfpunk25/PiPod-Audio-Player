@@ -5,6 +5,7 @@ import threading
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import unquote
 from unittest.mock import patch
 
 from pi.pipod import PiPod, entries, inside, make_handler, private_bind, status_file_path
@@ -45,6 +46,54 @@ class PiPodTests(unittest.TestCase):
         self.assertEqual(self.jukebox.now()["title"], "Track")
         self.jukebox.action("back")
         self.assertEqual(self.jukebox.browse()["name"], "Album")
+
+    def test_selecting_middle_song_keeps_album_for_previous_and_next(self):
+        album = self.root / "Album"
+        for name in ("01 First.mp3", "02 Middle.mp3", "03 Last.mp3"):
+            (album / name).write_bytes(b"sample")
+
+        class PlaylistVLC:
+            def __init__(self):
+                self.commands = []
+                self.tracks = []
+                self.index = 0
+
+            def call(self, command):
+                self.commands.append(command)
+                if command == "clear":
+                    self.tracks = []
+                elif command.startswith("add "):
+                    playlist = Path(command[4:].removeprefix("file://"))
+                    self.tracks = [Path(unquote(uri.removeprefix("file://"))) for uri in
+                                   playlist.read_text().splitlines()[1:]]
+                    self.index = 0
+                elif command == "playlist":
+                    return ("| 1 - Playlist\n" + "\n".join(
+                        "|  %s%d - %s" % ("*" if i == self.index else " ", i + 10, track.name)
+                        for i, track in enumerate(self.tracks)))
+                elif command.startswith("goto "):
+                    self.index = int(command[5:]) - 10
+                elif command == "next":
+                    self.index = min(self.index + 1, len(self.tracks) - 1)
+                elif command == "prev":
+                    self.index = max(self.index - 1, 0)
+                elif command == "status":
+                    return "( new input: %s )\n( state playing )" % self.tracks[self.index].as_uri() if self.tracks else "( state stopped )"
+                return "0" if command == "get_time" else ""
+
+        vlc = PlaylistVLC()
+        player = PiPod(self.root, vlc)
+        player.media_details = lambda path: {"duration": 0, "chapters": []}
+        player.play_path(album / "02 Middle.mp3")
+        self.assertEqual([p.name for p in vlc.tracks],
+                         ["01 First.mp3", "02 Middle.mp3", "03 Last.mp3", "Track.mp3"])
+        self.assertEqual(player.current_track().name, "02 Middle.mp3")
+        player.action("prev")
+        self.assertEqual(player.current_track().name, "01 First.mp3")
+        player.action("next")
+        self.assertEqual(player.current_track().name, "02 Middle.mp3")
+        player.action("next")
+        self.assertEqual(player.current_track().name, "03 Last.mp3")
 
     def test_path_cannot_escape_music(self):
         with self.assertRaises(ValueError):
