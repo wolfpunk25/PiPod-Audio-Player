@@ -16,7 +16,7 @@ This is an adaptation of [Carlos Olmos's MacroPad Jukebox](https://github.com/ca
 | Hold key 7 | Show the PiPod web address; release to return |
 | Keys 1, 2, 3 | Play, pause, stop |
 | Keys 9, 12 | Volume up, down |
-| Keys 10, 11 | Previous, next track |
+| Keys 10, 11 | Previous, next chapter when the file has chapters; otherwise previous, next track |
 
 The 3×4 key layout follows the numbered physical keys:
 
@@ -26,10 +26,12 @@ The 3×4 key layout follows the numbered physical keys:
 | 7 Hold: Web Address | 8 Select | 9 Volume Up |
 | 10 Previous | 11 Next | 12 Volume Down |
 
-The keys light up by action: Play green, Pause yellow, Stop red, screen toggle and web address purple, Previous and Next blue, Volume Down and Up orange, Select and Play Folder teal, and Back grey.
+The keys light up by action: Play green, Pause yellow, Stop red, screen toggle purple, web address white, Previous and Next blue, Volume Down and Up orange, Select and Play Folder teal, and Back grey.
 The Play key gently pulses while audio is playing and stays steady when paused or stopped.
 
-The now playing screen displays the embedded track title when present, falling back to the filename, plus playback state, elapsed and total time, and VLC volume. Folder navigation includes the path, selection, and item count. Audio formats recognized: MP3, FLAC, M4A, AAC, OGG, Opus, WAV, AIFF, WMA. VLC must have a decoder for the particular file.
+The now playing screen displays the embedded track title when present, falling back to the filename, plus playback state, elapsed and total time, and VLC volume. Folder navigation includes the path, selection, and item count. Audio formats recognized: MP3, FLAC, M4A, M4B, AAC, OGG, Opus, WAV, AIFF, WMA. VLC must have a decoder for the particular file.
+
+For files longer than ten minutes, PiPod saves playback position every 15 seconds and when you pause, stop, or switch tracks. Selecting a saved file resumes from that point. The positions are stored in `~/Music/.pipod-positions.json` and survive a Pi restart. Keys 10 and 11 move between embedded chapters when the current file has them; otherwise they move between playlist tracks. At the first or last chapter, they move to the previous or next playlist track. PiPod clears a saved position near the end of a file so a completed book starts at the beginning.
 
 ## Pi setup
 

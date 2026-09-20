@@ -7,7 +7,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from pi.pipod import PiPod, entries, inside, make_handler, private_bind
+from pi.pipod import PiPod, entries, inside, make_handler, private_bind, status_file_path
 
 
 class FakeVLC:
@@ -40,8 +40,8 @@ class PiPodTests(unittest.TestCase):
         self.assertEqual(self.jukebox.browse()["name"], "Track.mp3")
         self.jukebox.action("select")
         self.assertEqual(self.jukebox.screen, "now")
-        self.assertEqual(self.vlc.commands[0], "clear")
-        self.assertTrue(self.vlc.commands[1].startswith("add file://"))
+        self.assertIn("clear", self.vlc.commands)
+        self.assertTrue(any(command.startswith("add file://") for command in self.vlc.commands))
         self.assertEqual(self.jukebox.now()["title"], "Track")
         self.jukebox.action("back")
         self.assertEqual(self.jukebox.browse()["name"], "Album")
@@ -77,6 +77,67 @@ class PiPodTests(unittest.TestCase):
             probe.return_value.returncode = 0
             probe.return_value.stdout = '{"format":{}}'
             self.assertEqual(self.jukebox.now()["title"], "15 Does Your Mother Know")
+
+    def test_vlc_path_preserves_question_mark_in_audiobook_name(self):
+        track = self.root / "How Are You? Its Alan (Partridge).m4a"
+        track.write_bytes(b"sample")
+        status = "( new input: file://" + str(track) + " )\r\n( state paused )"
+        self.assertEqual(status_file_path(status), track)
+        self.vlc.call = lambda command: status if command == "status" else "1"
+        with patch("pi.pipod.subprocess.run") as probe:
+            probe.return_value.returncode = 0
+            probe.return_value.stdout = '{"format":{"tags":{"title":"How Are You? Its Alan"}}}'
+            self.assertEqual(self.jukebox.now()["title"], "How Are You? Its Alan")
+
+    def test_audiobook_position_survives_restart_and_chapter_keys(self):
+        book = self.root / "Book.m4b"
+        book.write_bytes(b"sample")
+
+        class BookVLC:
+            def __init__(self):
+                self.commands = []
+                self.current = None
+                self.elapsed = 0
+                self.chapter = 0
+
+            def call(self, command):
+                self.commands.append(command)
+                if command == "status":
+                    return ("( new input: " + self.current.as_uri() + " )\n( state playing )"
+                            if self.current else "( state stopped )")
+                if command.startswith("add "):
+                    self.current = book
+                    self.elapsed = 0
+                elif command.startswith("seek "):
+                    self.elapsed = int(command.split()[1])
+                elif command == "chapter_n":
+                    self.chapter += 1
+                    self.elapsed = [0, 300, 700][self.chapter]
+                elif command == "chapter_p":
+                    self.chapter -= 1
+                    self.elapsed = [0, 300, 700][self.chapter]
+                elif command == "get_time":
+                    return str(self.elapsed)
+                elif command == "chapter":
+                    return str(self.chapter)
+                return ""
+
+        vlc = BookVLC()
+        player = PiPod(self.root, vlc)
+        player.media_details = lambda path: {"duration": 1200, "chapters": [0, 300, 700]}
+        player.bookmarks["Book.m4b"] = 125
+        player._write_bookmarks()
+        player.play_path(book)
+        self.assertIn("seek 125", vlc.commands)
+        vlc.elapsed = 225
+        player.save_progress()
+        self.assertEqual(PiPod(self.root, vlc).bookmarks["Book.m4b"], 225)
+        player.action("next")
+        self.assertIn("chapter_n", vlc.commands)
+        self.assertEqual(vlc.chapter, 1)
+        player.action("prev")
+        self.assertIn("chapter_p", vlc.commands)
+        self.assertEqual(vlc.chapter, 0)
 
     def test_token_free_mode_is_limited_to_private_bind(self):
         self.assertTrue(private_bind("127.0.0.1"))
@@ -118,6 +179,8 @@ class PiPodTests(unittest.TestCase):
             self.assertEqual(conn.getresponse().status, 201)
             conn.request("POST", "/api/upload?path=New&name=Song.mp3", body=b"music", headers=headers)
             self.assertEqual(conn.getresponse().status, 201)
+            conn.request("POST", "/api/upload?path=New&name=Book.m4b", body=b"book", headers=headers)
+            self.assertEqual(conn.getresponse().status, 201)
             self.assertEqual((self.root / "New" / "Song.mp3").read_bytes(), b"music")
             conn.request("POST", "/api/upload?path=New&name=Song.mp3", body=b"replacement", headers=headers)
             self.assertEqual(conn.getresponse().status, 400)
@@ -127,7 +190,8 @@ class PiPodTests(unittest.TestCase):
             conn.request("GET", "/api/list?path=New", headers=headers)
             response = conn.getresponse()
             self.assertEqual(response.status, 200)
-            self.assertEqual(json.loads(response.read())["items"][0]["name"], "Song.mp3")
+            self.assertEqual([item["name"] for item in json.loads(response.read())["items"]],
+                             ["Book.m4b", "Song.mp3"])
             conn.request("DELETE", "/api/file?path=New%2FSong.mp3")
             self.assertEqual(conn.getresponse().status, 401)
             conn.request("DELETE", "/api/file?path=New%2FSong.mp3", headers=headers)

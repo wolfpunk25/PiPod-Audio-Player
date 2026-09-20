@@ -21,7 +21,7 @@
 <div class="bar"><button id="back">← Back</button><strong id="path">Music</strong><button id="refresh">Refresh</button></div>
 <div id="items"></div>
 <h2>Add music</h2>
-<div class="bar"><input id="files" type="file" accept="audio/*,.flac,.opus,.aiff" multiple><button id="upload">Upload files</button></div>
+<div class="bar"><input id="files" type="file" accept="audio/*,.flac,.opus,.aiff,.m4b" multiple><button id="upload">Upload files</button></div>
 <div class="bar"><input id="album" type="file" webkitdirectory multiple><button id="uploadAlbum">Upload album folder</button></div>
 <p class="muted">The album folder and any subfolders are kept. On a phone, create an album folder above, open it, then select multiple songs with “Upload files”.</p>
 <progress id="progress" value="0" max="100" hidden></progress>
@@ -35,11 +35,11 @@
   <li><span class="swatch" style="background:#6633aa"></span>4 Change screen</li>
   <li><span class="swatch" style="background:#666666"></span>5 Back</li>
   <li><span class="swatch" style="background:#008888"></span>6 Play folder</li>
-  <li><span class="swatch" style="background:#6633aa"></span>7 Hold: web address</li>
+  <li><span class="swatch" style="background:#ffffff"></span>7 Hold: web address</li>
   <li><span class="swatch" style="background:#008888"></span>8 Select</li>
   <li><span class="swatch" style="background:#884400"></span>9 Volume up</li>
-  <li><span class="swatch" style="background:#2244aa"></span>10 Previous</li>
-  <li><span class="swatch" style="background:#2244aa"></span>11 Next</li>
+  <li><span class="swatch" style="background:#2244aa"></span>10 Previous / chapter</li>
+  <li><span class="swatch" style="background:#2244aa"></span>11 Next / chapter</li>
   <li><span class="swatch" style="background:#884400"></span>12 Volume down</li>
 </ul>
 <script>
@@ -48,7 +48,7 @@ const authRequired = document.documentElement.dataset.auth === "true";
 let token = authRequired ? (sessionStorage.getItem("pipodToken") || sessionStorage.getItem("jukeboxToken") || prompt("PiPod access token") || "") : "";
 if (authRequired) sessionStorage.setItem("pipodToken", token);
 const $ = id => document.getElementById(id);
-const audioExtensions = new Set(["mp3","flac","m4a","aac","ogg","opus","wav","aiff","wma"]);
+const audioExtensions = new Set(["mp3","flac","m4a","m4b","aac","ogg","opus","wav","aiff","wma"]);
 function msg(value){ $("message").textContent = value; }
 async function api(url, options={}) {
   options.headers = {...options.headers};
