@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import socket
 import subprocess
 import threading
@@ -490,22 +491,48 @@ def make_handler(jukebox, token):
             if not self._require_auth():
                 return
             parsed = urlparse(self.path)
-            if parsed.path != "/api/file":
+            if parsed.path not in {"/api/file", "/api/folder"}:
                 self._json(404, {"error": "Not found"})
                 return
             try:
                 rel = parse_qs(parsed.query).get("path", [""])[0]
                 parts = Path(rel).parts
-                if not parts or any(part in {".", ".."} or part.startswith(".") for part in parts):
-                    raise ValueError("invalid file path")
+                if (not parts or Path(rel).is_absolute() or
+                        any(part in {".", ".."} or part.startswith(".") for part in parts)):
+                    raise ValueError("invalid path")
                 candidate = jukebox.root.joinpath(*parts)
                 if any(path.is_symlink() for path in (candidate, *candidate.parents) if path != jukebox.root):
-                    raise ValueError("invalid file path")
+                    raise ValueError("invalid path")
                 target = inside(jukebox.root, rel)
-                if target.suffix.lower() not in AUDIO or not target.is_file():
-                    raise ValueError("audio file does not exist")
-                target.unlink()
-                jukebox.forget_bookmark(target)
+                if target == jukebox.root:
+                    raise ValueError("cannot delete the music folder")
+                with jukebox.lock:
+                    if parsed.path == "/api/folder":
+                        if not target.is_dir():
+                            raise ValueError("folder does not exist")
+                        try:
+                            current = jukebox.current_track()
+                        except (OSError, TimeoutError):
+                            current = None
+                        if current is not None and target in current.parents:
+                            jukebox.save_progress()
+                            jukebox.vlc.call("stop")
+                            jukebox.vlc.call("clear")
+                        shutil.rmtree(target)
+                        prefix = str(target.relative_to(jukebox.root)) + "/"
+                        saved = {key: value for key, value in jukebox.bookmarks.items()
+                                 if not key.startswith(prefix)}
+                        if len(saved) != len(jukebox.bookmarks):
+                            jukebox.bookmarks = saved
+                            jukebox._write_bookmarks()
+                        if jukebox.folder == target or target in jukebox.folder.parents:
+                            jukebox.folder = target.parent
+                            jukebox.position = 0
+                    else:
+                        if target.suffix.lower() not in AUDIO or not target.is_file():
+                            raise ValueError("audio file does not exist")
+                        target.unlink()
+                        jukebox.forget_bookmark(target)
                 self._json(200, {"ok": True})
             except (ValueError, OSError) as exc:
                 self._json(400, {"error": str(exc)})

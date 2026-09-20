@@ -254,6 +254,49 @@ class PiPodTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_folder_delete_removes_contents_without_escaping_music(self):
+        album = self.root / "Album"
+        disc = album / "Disc 1"
+        disc.mkdir()
+        (disc / "Chapter.m4b").write_bytes(b"book")
+        commands = []
+        def playing_vlc(command):
+            commands.append(command)
+            return ("( new input: %s )\n( state playing )" % (disc / "Chapter.m4b").as_uri()
+                    if command == "status" else "0" if command == "get_time" else "")
+        self.vlc.call = playing_vlc
+        self.jukebox.folder = disc.resolve()
+        self.jukebox.bookmarks = {"Album/Disc 1/Chapter.m4b": 80, "Other.m4b": 90}
+        self.jukebox._write_bookmarks()
+        with tempfile.TemporaryDirectory() as outside_dir:
+            outside = Path(outside_dir) / "outside.mp3"
+            outside.write_bytes(b"keep")
+            (disc / "link.mp3").symlink_to(outside)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.jukebox, "0123456789abcdef"))
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", server.server_port)
+                headers = {"Authorization": "Bearer 0123456789abcdef"}
+                for path in ("", "..%2FAlbum", "Album%2FDisc%201%2Flink.mp3"):
+                    conn.request("DELETE", "/api/folder?path=" + path, headers=headers)
+                    self.assertEqual(conn.getresponse().status, 400)
+                conn.request("DELETE", "/api/folder?path=Album")
+                self.assertEqual(conn.getresponse().status, 401)
+                self.assertTrue(album.exists())
+                conn.request("DELETE", "/api/folder?path=Album", headers=headers)
+                self.assertEqual(conn.getresponse().status, 200)
+                self.assertFalse(album.exists())
+                self.assertEqual(outside.read_bytes(), b"keep")
+                self.assertIn("stop", commands)
+                self.assertIn("clear", commands)
+                self.assertEqual(self.jukebox.folder, self.jukebox.root)
+                self.assertEqual(self.jukebox.bookmarks, {"Other.m4b": 90})
+                conn.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

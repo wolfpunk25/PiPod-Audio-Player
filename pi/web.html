@@ -75,22 +75,24 @@ async function load(){
       name.textContent = (item.directory ? "📁 " : "♫ ") + item.name;
       if (item.directory) name.onclick = () => {folder = [folder,item.name].filter(Boolean).join("/");load();};
       row.append(name);
-      if (!item.directory) {
-        const remove = document.createElement("button");
-        remove.className = "delete";
-        remove.textContent = "Delete";
-        remove.setAttribute("aria-label", "Delete " + item.name);
-        remove.onclick = async () => {
-          if (!confirm(`Permanently delete “${item.name}”?`)) return;
-          try {
-            const path = [folder,item.name].filter(Boolean).join("/");
-            await api("/api/file?path="+encodeURIComponent(path), {method:"DELETE"});
-            msg(`Deleted ${item.name}.`);
-            await load();
-          } catch(e) {msg(e.message);}
-        };
-        row.append(remove);
-      }
+      const remove = document.createElement("button");
+      remove.className = "delete";
+      remove.textContent = "Delete";
+      remove.setAttribute("aria-label", "Delete " + (item.directory ? "folder " : "file ") + item.name);
+      remove.onclick = async () => {
+        const warning = item.directory
+          ? `Permanently delete folder “${item.name}” and everything inside it? This cannot be undone.`
+          : `Permanently delete “${item.name}”?`;
+        if (!confirm(warning)) return;
+        try {
+          const path = [folder,item.name].filter(Boolean).join("/");
+          await api((item.directory ? "/api/folder?path=" : "/api/file?path=") + encodeURIComponent(path),
+                    {method:"DELETE"});
+          msg(`Deleted ${item.name}.`);
+          await load();
+        } catch(e) {msg(e.message);}
+      };
+      row.append(remove);
       $("items").append(row);
     }
   } catch(e) {msg(e.message);}
