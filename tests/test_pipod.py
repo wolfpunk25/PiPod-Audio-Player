@@ -5,6 +5,7 @@ import threading
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from pi.pipod import PiPod, entries, inside, make_handler, private_bind
 
@@ -59,6 +60,24 @@ class PiPodTests(unittest.TestCase):
         self.jukebox.action("now")
         self.assertEqual(self.jukebox.display()["type"], "browse")
 
+    def test_now_playing_uses_metadata_and_filename_fallback(self):
+        track = self.root / "Album" / "15 Does Your Mother Know.mp3"
+        track.write_bytes(b"sample")
+        self.vlc.call = lambda command: (
+            "( state playing )\r\n( new input: file://" + str(track) + " )\r\n"
+            if command == "status" else "1")
+        with patch("pi.pipod.subprocess.run") as probe:
+            probe.return_value.returncode = 0
+            probe.return_value.stdout = '{"format":{"tags":{"title":"Does Your Mother Know"}}}'
+            self.assertEqual(self.jukebox.now()["title"], "Does Your Mother Know")
+            self.assertEqual(self.jukebox.now()["title"], "Does Your Mother Know")
+            self.assertEqual(probe.call_count, 1)
+        self.jukebox.title_cache.clear()
+        with patch("pi.pipod.subprocess.run") as probe:
+            probe.return_value.returncode = 0
+            probe.return_value.stdout = '{"format":{}}'
+            self.assertEqual(self.jukebox.now()["title"], "15 Does Your Mother Know")
+
     def test_token_free_mode_is_limited_to_private_bind(self):
         self.assertTrue(private_bind("127.0.0.1"))
         self.assertTrue(private_bind("100.101.102.103"))
@@ -95,6 +114,8 @@ class PiPodTests(unittest.TestCase):
             headers = {"Authorization": "Bearer 0123456789abcdef"}
             conn.request("POST", "/api/mkdir?path=&name=New", headers=headers)
             self.assertEqual(conn.getresponse().status, 201)
+            conn.request("POST", "/api/mkdir?path=&name=New", headers=headers)
+            self.assertEqual(conn.getresponse().status, 201)
             conn.request("POST", "/api/upload?path=New&name=Song.mp3", body=b"music", headers=headers)
             self.assertEqual(conn.getresponse().status, 201)
             self.assertEqual((self.root / "New" / "Song.mp3").read_bytes(), b"music")
@@ -107,6 +128,14 @@ class PiPodTests(unittest.TestCase):
             response = conn.getresponse()
             self.assertEqual(response.status, 200)
             self.assertEqual(json.loads(response.read())["items"][0]["name"], "Song.mp3")
+            conn.request("DELETE", "/api/file?path=New%2FSong.mp3")
+            self.assertEqual(conn.getresponse().status, 401)
+            conn.request("DELETE", "/api/file?path=New%2FSong.mp3", headers=headers)
+            self.assertEqual(conn.getresponse().status, 200)
+            self.assertFalse((self.root / "New" / "Song.mp3").exists())
+            conn.request("DELETE", "/api/file?path=..%2Fignored.txt", headers=headers)
+            self.assertEqual(conn.getresponse().status, 400)
+            self.assertTrue((self.root / "ignored.txt").exists())
             conn.close()
         finally:
             server.shutdown()

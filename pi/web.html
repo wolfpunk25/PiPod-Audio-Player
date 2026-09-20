@@ -8,7 +8,12 @@
   button,input{font:inherit}button{cursor:pointer;background:#374151;color:inherit;border:1px solid #6b7280;border-radius:.4rem;padding:.5rem .8rem}
   button:hover{background:#4b5563}input{padding:.5rem;background:#1f2937;color:inherit;border:1px solid #6b7280;border-radius:.4rem}
   .bar{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:1rem 0}
-  .item{display:block;width:100%;text-align:left;margin:.35rem 0}.muted{color:#9ca3af}#message{min-height:1.5rem}
+  .item{display:flex;gap:.5rem;align-items:center;margin:.35rem 0}.item .name{flex:1;min-width:0;overflow-wrap:anywhere;text-align:left}
+  .item .delete{background:#7f1d1d;border-color:#b91c1c}.item .delete:hover{background:#991b1b}
+  .legend{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.5rem;padding:0;list-style:none}
+  .legend li{border:1px solid #374151;border-radius:.4rem;padding:.5rem;min-width:0}
+  .swatch{display:inline-block;width:.85rem;height:.85rem;border-radius:50%;margin-right:.45rem;vertical-align:-.08rem}
+  .muted{color:#9ca3af}#message{min-height:1.5rem}
   progress{width:100%;height:1rem}
 </style>
 <h1>PiPod Audio Player</h1>
@@ -17,15 +22,33 @@
 <div id="items"></div>
 <h2>Add music</h2>
 <div class="bar"><input id="files" type="file" accept="audio/*,.flac,.opus,.aiff" multiple><button id="upload">Upload files</button></div>
+<div class="bar"><input id="album" type="file" webkitdirectory multiple><button id="uploadAlbum">Upload album folder</button></div>
+<p class="muted">The album folder and any subfolders are kept. On a phone, create an album folder above, open it, then select multiple songs with “Upload files”.</p>
 <progress id="progress" value="0" max="100" hidden></progress>
 <div class="bar"><input id="folder" placeholder="New folder name"><button id="create">Create folder</button></div>
 <p id="message" role="status"></p>
+<h2>MacroPad keys</h2>
+<ul class="legend">
+  <li><span class="swatch" style="background:#00aa44"></span>1 Play</li>
+  <li><span class="swatch" style="background:#ccaa00"></span>2 Pause</li>
+  <li><span class="swatch" style="background:#aa2222"></span>3 Stop</li>
+  <li><span class="swatch" style="background:#6633aa"></span>4 Change screen</li>
+  <li><span class="swatch" style="background:#666666"></span>5 Back</li>
+  <li><span class="swatch" style="background:#008888"></span>6 Play folder</li>
+  <li class="muted">7 Spare</li>
+  <li><span class="swatch" style="background:#008888"></span>8 Select</li>
+  <li><span class="swatch" style="background:#884400"></span>9 Volume up</li>
+  <li><span class="swatch" style="background:#2244aa"></span>10 Previous</li>
+  <li><span class="swatch" style="background:#2244aa"></span>11 Next</li>
+  <li><span class="swatch" style="background:#884400"></span>12 Volume down</li>
+</ul>
 <script>
 let folder = "";
 const authRequired = document.documentElement.dataset.auth === "true";
 let token = authRequired ? (sessionStorage.getItem("pipodToken") || sessionStorage.getItem("jukeboxToken") || prompt("PiPod access token") || "") : "";
 if (authRequired) sessionStorage.setItem("pipodToken", token);
 const $ = id => document.getElementById(id);
+const audioExtensions = new Set(["mp3","flac","m4a","aac","ogg","opus","wav","aiff","wma"]);
 function msg(value){ $("message").textContent = value; }
 async function api(url, options={}) {
   options.headers = {...options.headers};
@@ -45,11 +68,29 @@ async function load(){
     $("items").replaceChildren();
     if (!data.items.length) $("items").textContent = "This folder is empty.";
     for (const item of data.items) {
-      const row = document.createElement("button");
+      const row = document.createElement("div");
       row.className = "item";
-      row.textContent = (item.directory ? "📁 " : "♫ ") + item.name;
-      if (item.directory) row.onclick = () => {folder = [folder,item.name].filter(Boolean).join("/");load();};
-      else row.disabled = true;
+      const name = document.createElement(item.directory ? "button" : "span");
+      name.className = "name";
+      name.textContent = (item.directory ? "📁 " : "♫ ") + item.name;
+      if (item.directory) name.onclick = () => {folder = [folder,item.name].filter(Boolean).join("/");load();};
+      row.append(name);
+      if (!item.directory) {
+        const remove = document.createElement("button");
+        remove.className = "delete";
+        remove.textContent = "Delete";
+        remove.setAttribute("aria-label", "Delete " + item.name);
+        remove.onclick = async () => {
+          if (!confirm(`Permanently delete “${item.name}”?`)) return;
+          try {
+            const path = [folder,item.name].filter(Boolean).join("/");
+            await api("/api/file?path="+encodeURIComponent(path), {method:"DELETE"});
+            msg(`Deleted ${item.name}.`);
+            await load();
+          } catch(e) {msg(e.message);}
+        };
+        row.append(remove);
+      }
       $("items").append(row);
     }
   } catch(e) {msg(e.message);}
@@ -63,19 +104,49 @@ $("create").onclick=async()=>{
     $("folder").value="";msg("Folder created.");await load();
   } catch(e){msg(e.message);}
 };
-$("upload").onclick=async()=>{
-  const files=[...$("files").files];
-  if (!files.length){msg("Choose one or more audio files.");return;}
+async function uploadFiles(files, albumMode){
+  if (!files.length){msg(albumMode ? "Choose an album folder." : "Choose one or more audio files.");return;}
+  if (albumMode && files.some(file => !file.webkitRelativePath)) {
+    msg("This browser did not provide an album folder. Create a folder here and upload the songs into it.");return;
+  }
+  const tracks = files.map(file => {
+    const parts = albumMode ? file.webkitRelativePath.split("/") : [file.name];
+    return {file,parts};
+  }).filter(({parts}) => audioExtensions.has((parts.at(-1).split(".").at(-1) || "").toLowerCase()));
+  if (!tracks.length){msg("No supported audio files were selected.");return;}
+  if (albumMode && tracks.some(({parts}) => parts.length < 2 || parts.some(part => !part || part === "." || part === ".." || part.startsWith(".")))){
+    msg("The selected album contains an unsupported folder or file name.");return;
+  }
   $("progress").hidden=false;
-  for (let i=0;i<files.length;i++) {
-    const file=files[i];msg(`Uploading ${file.name} (${i+1}/${files.length})…`);
+  $("progress").value=0;
+  const made = new Set();
+  for (let i=0;i<tracks.length;i++) {
+    const {file,parts}=tracks[i];
+    msg(`Uploading ${parts.join("/")} (${i+1}/${tracks.length})…`);
     try {
-      await api("/api/upload?path="+encodeURIComponent(folder)+"&name="+encodeURIComponent(file.name),
+      let destination=folder;
+      for (const part of parts.slice(0,-1)) {
+        const next=[destination,part].filter(Boolean).join("/");
+        if (!made.has(next)) {
+          await api("/api/mkdir?path="+encodeURIComponent(destination)+"&name="+encodeURIComponent(part), {method:"POST"});
+          made.add(next);
+        }
+        destination=next;
+      }
+      await api("/api/upload?path="+encodeURIComponent(destination)+"&name="+encodeURIComponent(parts.at(-1)),
                 {method:"POST",body:file,headers:{"Content-Type":"application/octet-stream"}});
-      $("progress").value=Math.round((i+1)*100/files.length);
+      $("progress").value=Math.round((i+1)*100/tracks.length);
     } catch(e){msg(`${file.name}: ${e.message}`);return;}
   }
-  $("files").value="";msg("Upload complete.");await load();
+  $(albumMode ? "album" : "files").value="";
+  msg(`Uploaded ${tracks.length} audio file${tracks.length===1 ? "" : "s"}.`);
+  await load();
+}
+$("upload").onclick=async()=>{
+  await uploadFiles([...$("files").files], false);
+};
+$("uploadAlbum").onclick=async()=>{
+  await uploadFiles([...$("album").files], true);
 };
 load();
 </script>

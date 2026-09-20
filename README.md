@@ -10,19 +10,29 @@ This is an adaptation of [Carlos Olmos's MacroPad Jukebox](https://github.com/ca
 | --- | --- |
 | Encoder turn | Move through the current folder |
 | Encoder press or key 8 | Open folder or play the selected song |
-| Key 10 | Go to parent folder |
-| Key 12 | Play every audio file in the selected folder, or the current folder |
+| Key 5 | Go to parent folder |
+| Key 6 | Play every audio file in the selected folder, or the current folder |
 | Key 4 | Toggle folder browser and now playing screen |
 | Keys 1, 2, 3 | Play, pause, stop |
-| Keys 5, 6 | Previous, next track |
-| Keys 7, 9 | Volume down, up |
+| Keys 9, 12 | Volume up, down |
+| Keys 10, 11 | Previous, next track |
 
-The now playing screen displays the track filename, playback state, elapsed and total time, and VLC volume. Folder navigation includes the path, selection, and item count. Audio formats recognized: MP3, FLAC, M4A, AAC, OGG, Opus, WAV, AIFF, WMA. VLC must have a decoder for the particular file.
+The 3×4 key layout follows the numbered physical keys:
+
+| 1 Play | 2 Pause | 3 Stop |
+| --- | --- | --- |
+| 4 Screen | 5 Back | 6 Play Folder |
+| 7 Spare | 8 Select | 9 Volume Up |
+| 10 Previous | 11 Next | 12 Volume Down |
+
+The keys light up by action: Play green, Pause yellow, Stop red, screen toggle purple, Previous and Next blue, Volume Down and Up orange, Select and Play Folder teal, and Back grey. Key 7 is unlit.
+
+The now playing screen displays the embedded track title when present, falling back to the filename, plus playback state, elapsed and total time, and VLC volume. Folder navigation includes the path, selection, and item count. Audio formats recognized: MP3, FLAC, M4A, AAC, OGG, Opus, WAV, AIFF, WMA. VLC must have a decoder for the particular file.
 
 ## Pi setup
 
 1. Connect the MacroPad directly to the Pi with a data-capable USB cable. Connect the Pi's audio output to a speaker or headphones.
-2. Install VLC and Python serial support if they are absent: `sudo apt-get update && sudo apt-get install -y vlc python3-serial`.
+2. Install VLC, FFprobe, and Python serial support if they are absent: `sudo apt-get update && sudo apt-get install -y vlc ffmpeg python3-serial`.
 3. Copy this repository to `~/pipod-audio-player` on the Pi. Create `~/Music` if needed. Files uploaded from the web page go there.
 4. Run `sh ~/pipod-audio-player/pi/install.sh`. It creates a private `pipod.env` file with an access token and enables the player services. The existing token is retained if upgrading from the earlier MacroPad Jukebox installation.
 
@@ -61,5 +71,7 @@ PIPOD_TOKEN=
 ```
 
 Open `http://100.x.y.z:8080/` from a device connected to the tailnet. The uploader does not prompt for a PiPod token in this mode. PiPod refuses to start without a token if bound to the LAN or all network interfaces.
+
+The web page can upload individual songs or a complete album folder. On a computer, choose **Upload album folder** to keep its folder structure, including subfolders. On a phone or tablet, create an album folder in the web page, open it, select multiple songs, and choose **Upload files**. Each listed audio file has a **Delete** button with a confirmation prompt; deletion is permanent. Existing files are never overwritten by an upload.
 
 The original sequencer firmware is saved locally under `backups/macropad-before-jukebox-2026-09-20/`. That directory is excluded from Git. Restore its `code.py` and `boot.py` to CIRCUITPY to return to the sequencer.

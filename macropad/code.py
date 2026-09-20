@@ -15,13 +15,13 @@ pad.pixels[0] = 0x00AA44  # play
 pad.pixels[1] = 0xCCAA00  # pause
 pad.pixels[2] = 0xAA2222  # stop
 pad.pixels[3] = 0x6633AA  # now playing
-pad.pixels[4] = 0x2244AA  # previous
-pad.pixels[5] = 0x2244AA  # next
-pad.pixels[6] = 0x884400  # quieter
+pad.pixels[4] = 0x666666  # back
+pad.pixels[5] = 0x008888  # play folder
 pad.pixels[7] = 0x008888  # select
 pad.pixels[8] = 0x884400  # louder
-pad.pixels[9] = 0x666666  # back
-pad.pixels[11] = 0x008888 # play folder
+pad.pixels[9] = 0x2244AA  # previous
+pad.pixels[10] = 0x2244AA # next
+pad.pixels[11] = 0x884400 # quieter
 
 group = displayio.Group()
 lines = []
@@ -61,12 +61,12 @@ def draw():
         values = ["BROWSE", clip(state.get("path", "/")),
                   ("> " if state.get("directory") else "♫ ") + clip(state.get("name", ""), 19),
                   "%s / %s" % (state.get("index", 0), state.get("count", 0)),
-                  "Knob: browse/enter", "10: back  12: album"]
+                  "Knob: browse/enter", "5: back  6: album"]
     else:
         values = ["NOW PLAYING", clip(state.get("title", "")),
                   clip(state.get("state", "")),
                   "%s / %s" % (clock(state.get("elapsed", 0)), clock(state.get("length", 0))),
-                  "Vol: %s" % state.get("volume", 0), "4: folders  7/9: vol"]
+                  "Vol: %s" % state.get("volume", 0), "4: folders 9/12:vol"]
     if state and state.get("error"):
         values[5] = clip(state["error"])
     for line, value in zip(lines, values):
@@ -82,8 +82,8 @@ while True:
         if event.pressed and key not in held_keys:
             held_keys.add(key)
             commands = {0: "play", 1: "pause", 2: "stop", 3: "now",
-                        4: "prev", 5: "next", 6: "voldown", 7: "select",
-                        8: "volup", 9: "back", 11: "play_folder"}
+                        4: "back", 5: "play_folder", 7: "select",
+                        8: "volup", 9: "prev", 10: "next", 11: "voldown"}
             if key in commands:
                 send(commands[key])
         elif event.released:

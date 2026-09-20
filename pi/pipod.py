@@ -79,6 +79,7 @@ class PiPod:
         self.screen = "browse"
         self.lock = threading.RLock()
         self.error = ""
+        self.title_cache = {}
 
     def browse(self):
         with self.lock:
@@ -143,6 +144,27 @@ class PiPod:
         self.vlc.call("add " + playlist.as_uri())
         self.screen = "now"
 
+    def track_title(self, path):
+        fallback = path.stem
+        try:
+            path = inside(self.root, path.resolve().relative_to(self.root))
+            stamp = path.stat().st_mtime_ns
+            key = (path, stamp)
+            if key not in self.title_cache:
+                result = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format_tags=title",
+                     "-of", "json", str(path)], capture_output=True, text=True, timeout=3,
+                    check=False)
+                tags = json.loads(result.stdout).get("format", {}).get("tags", {}) if result.returncode == 0 else {}
+                title = next((str(value).strip() for name, value in tags.items()
+                              if name.lower() == "title" and str(value).strip()), fallback)
+                if len(self.title_cache) >= 64:
+                    self.title_cache.clear()
+                self.title_cache[key] = title
+            return self.title_cache[key]
+        except (OSError, ValueError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            return fallback
+
     def now(self):
         try:
             status = self.vlc.call("status")
@@ -150,9 +172,9 @@ class PiPod:
             elapsed = self.vlc.call("get_time")
             length = self.vlc.call("get_length")
             volume = self.vlc.call("volume")
-            match = re.search(r"(?:new input|input):\s*(\S+)", status)
+            match = re.search(r"(?:new input|input):[ \t]*(.+?)[ \t]*\)[ \t]*(?:\r?\n|$)", status)
             uri = match.group(1) if match else ""
-            title = Path(unquote(urlparse(uri).path)).stem if uri else "Nothing playing"
+            title = self.track_title(Path(unquote(urlparse(uri).path))) if uri else "Nothing playing"
             state_match = re.search(r"state\s+([^\s)]+)", status)
             state = state_match.group(1) if state_match else ("playing" if playing.strip().startswith("1") else "stopped")
             def number(s):
@@ -277,7 +299,9 @@ def make_handler(jukebox, token):
                     raise ValueError("invalid name")
                 target = inside(folder, name)
                 if parsed.path == "/api/mkdir":
-                    target.mkdir(exist_ok=False)
+                    if target.is_symlink():
+                        raise ValueError("invalid folder")
+                    target.mkdir(exist_ok=True)
                 elif parsed.path == "/api/upload":
                     if target.suffix.lower() not in AUDIO:
                         raise ValueError("unsupported audio file")
@@ -305,6 +329,29 @@ def make_handler(jukebox, token):
                     return
                 self._json(201, {"ok": True})
             except (ValueError, OSError, ConnectionError) as exc:
+                self._json(400, {"error": str(exc)})
+
+        def do_DELETE(self):
+            if not self._require_auth():
+                return
+            parsed = urlparse(self.path)
+            if parsed.path != "/api/file":
+                self._json(404, {"error": "Not found"})
+                return
+            try:
+                rel = parse_qs(parsed.query).get("path", [""])[0]
+                parts = Path(rel).parts
+                if not parts or any(part in {".", ".."} or part.startswith(".") for part in parts):
+                    raise ValueError("invalid file path")
+                candidate = jukebox.root.joinpath(*parts)
+                if any(path.is_symlink() for path in (candidate, *candidate.parents) if path != jukebox.root):
+                    raise ValueError("invalid file path")
+                target = inside(jukebox.root, rel)
+                if target.suffix.lower() not in AUDIO or not target.is_file():
+                    raise ValueError("audio file does not exist")
+                target.unlink()
+                self._json(200, {"ok": True})
+            except (ValueError, OSError) as exc:
                 self._json(400, {"error": str(exc)})
 
     return Handler
