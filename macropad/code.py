@@ -37,6 +37,7 @@ state = None
 encoder = pad.encoder
 last_draw = 0
 held_keys = set()
+last_play_color = None
 
 
 def send(command):
@@ -52,6 +53,19 @@ def clip(value, width=21):
 def clock(seconds):
     seconds = max(0, int(seconds))
     return "%d:%02d" % (seconds // 60, seconds % 60)
+
+
+def update_play_light():
+    global last_play_color
+    if state and state.get("state") == "playing":
+        phase = (time.monotonic() % 1.8) / 1.8
+        strength = 0.25 + 0.75 * (1 - abs(2 * phase - 1))
+        color = (int(0xAA * strength) << 8) | int(0x44 * strength)
+    else:
+        color = 0x00AA44
+    if color != last_play_color:
+        pad.pixels[0] = color
+        last_play_color = color
 
 
 def draw():
@@ -111,4 +125,5 @@ while True:
                 buffer.append(byte)
             else:
                 buffer = bytearray()
+    update_play_light()
     time.sleep(0.01)
