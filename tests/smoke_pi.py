@@ -25,9 +25,10 @@ with wave.open(audio, "wb") as output:
     output.setframerate(8000)
     output.writeframes(b"\0\0" * 16000)
 request = urllib.request.Request(
-    "http://127.0.0.1:8080/api/upload?path=&name=" + name,
+    "http://" + env.get("PIPOD_BIND", "127.0.0.1") + ":8080/api/upload?path=&name=" + name,
     data=audio.getvalue(), method="POST",
-    headers={"Authorization": "Bearer " + env["PIPOD_TOKEN"]})
+    headers=({"Authorization": "Bearer " + env["PIPOD_TOKEN"]}
+             if env.get("PIPOD_TOKEN") else {}))
 vlc = VLC()
 try:
     with urllib.request.urlopen(request, timeout=5) as response:

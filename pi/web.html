@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-auth="__PIPOD_AUTH_REQUIRED__">
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PiPod Audio Player</title>
 <style>
@@ -22,12 +22,14 @@
 <p id="message" role="status"></p>
 <script>
 let folder = "";
-let token = sessionStorage.getItem("pipodToken") || sessionStorage.getItem("jukeboxToken") || prompt("PiPod access token") || "";
-sessionStorage.setItem("pipodToken", token);
+const authRequired = document.documentElement.dataset.auth === "true";
+let token = authRequired ? (sessionStorage.getItem("pipodToken") || sessionStorage.getItem("jukeboxToken") || prompt("PiPod access token") || "") : "";
+if (authRequired) sessionStorage.setItem("pipodToken", token);
 const $ = id => document.getElementById(id);
 function msg(value){ $("message").textContent = value; }
 async function api(url, options={}) {
-  options.headers = {...options.headers, Authorization: "Bearer " + token};
+  options.headers = {...options.headers};
+  if (authRequired) options.headers.Authorization = "Bearer " + token;
   const response = await fetch(url, options);
   const data = await response.json();
   if (!response.ok) {

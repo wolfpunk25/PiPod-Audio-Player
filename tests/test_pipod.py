@@ -6,7 +6,7 @@ import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from pi.pipod import PiPod, entries, inside, make_handler
+from pi.pipod import PiPod, entries, inside, make_handler, private_bind
 
 
 class FakeVLC:
@@ -58,6 +58,31 @@ class PiPodTests(unittest.TestCase):
         self.assertEqual(self.jukebox.display()["type"], "now")
         self.jukebox.action("now")
         self.assertEqual(self.jukebox.display()["type"], "browse")
+
+    def test_token_free_mode_is_limited_to_private_bind(self):
+        self.assertTrue(private_bind("127.0.0.1"))
+        self.assertTrue(private_bind("100.101.102.103"))
+        self.assertFalse(private_bind("0.0.0.0"))
+        self.assertFalse(private_bind("192.168.68.54"))
+        self.assertFalse(private_bind("8.8.8.8"))
+
+    def test_token_free_browser(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.jukebox, None))
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_port)
+            conn.request("GET", "/")
+            page = conn.getresponse().read().decode()
+            self.assertIn('data-auth="false"', page)
+            conn.request("GET", "/api/list?path=")
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read())["items"][0]["name"], "Album")
+            conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_authenticated_upload_and_directory_creation(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.jukebox, "0123456789abcdef"))

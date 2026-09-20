@@ -47,4 +47,19 @@ The now playing screen displays the track filename, playback state, elapsed and 
 
 Check logs in `~/pipod-audio-player/pipod.log` and `~/pipod-audio-player/vlc.log`. The web server is intended for a trusted local network: its token is sent over HTTP, so do not forward port 8080 to the internet.
 
+## Private access away from home without a PiPod token
+
+Install [Tailscale](https://tailscale.com/docs/install/linux) on the Pi and on each phone, tablet, or computer that should reach PiPod. Sign all devices into the same tailnet. The Pi receives a private `100.x.y.z` Tailscale address; this address works when the devices are away from home as long as Tailscale is connected. Do not use Tailscale Funnel or forward port 8080 on the router, because those expose the uploader to the public internet.
+
+After the Pi has joined the tailnet, run `sh ~/pipod-audio-player/pi/enable-tailscale.sh`. It sets the bind address and removes the PiPod token from the active configuration, keeping a private backup of the previous configuration. The resulting environment file contains:
+
+```sh
+PIPOD_MUSIC=/home/your-user/Music
+PIPOD_WEB_PORT=8080
+PIPOD_BIND=100.x.y.z
+PIPOD_TOKEN=
+```
+
+Open `http://100.x.y.z:8080/` from a device connected to the tailnet. The uploader does not prompt for a PiPod token in this mode. PiPod refuses to start without a token if bound to the LAN or all network interfaces.
+
 The original sequencer firmware is saved locally under `backups/macropad-before-jukebox-2026-09-20/`. That directory is excluded from Git. Restore its `code.py` and `boot.py` to CIRCUITPY to return to the sequencer.

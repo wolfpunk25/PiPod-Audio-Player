@@ -2,6 +2,7 @@
 """PiPod Audio Player: folder browser, VLC control, serial UI, and uploads."""
 
 import argparse
+import ipaddress
 import json
 import logging
 import os
@@ -204,9 +205,19 @@ def serial_worker(jukebox, serial_path=None):
             time.sleep(3)
 
 
+def private_bind(address):
+    try:
+        ip = ipaddress.ip_address(address)
+        return ip.is_loopback or ip in ipaddress.ip_network("100.64.0.0/10")
+    except ValueError:
+        return False
+
+
 def make_handler(jukebox, token):
     class Handler(BaseHTTPRequestHandler):
         def _authorized(self):
+            if not token:
+                return True
             return secrets.compare_digest(self.headers.get("Authorization", ""), "Bearer " + token)
 
         def _json(self, status, payload):
@@ -226,7 +237,8 @@ def make_handler(jukebox, token):
 
         def do_GET(self):
             if self.path == "/":
-                body = (Path(__file__).with_name("web.html")).read_bytes()
+                body = (Path(__file__).with_name("web.html")).read_bytes().replace(
+                    b"__PIPOD_AUTH_REQUIRED__", b"true" if token else b"false")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -302,17 +314,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--music", default=os.environ.get("PIPOD_MUSIC", "~/Music"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PIPOD_WEB_PORT", "8080")))
+    parser.add_argument("--bind", default=os.environ.get("PIPOD_BIND", "0.0.0.0"))
     parser.add_argument("--serial", default=os.environ.get("PIPOD_SERIAL"))
     parser.add_argument("--token", default=os.environ.get("PIPOD_TOKEN"))
     args = parser.parse_args()
-    if not args.token or len(args.token) < 16:
-        parser.error("Set PIPOD_TOKEN to a random token of at least 16 characters")
+    if args.token and len(args.token) < 16:
+        parser.error("PIPOD_TOKEN must have at least 16 characters")
+    if not args.token and not private_bind(args.bind):
+        parser.error("Token-free mode requires PIPOD_BIND to be loopback or a Tailscale IP")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     player = VLC()
     jukebox = PiPod(args.music, player)
     threading.Thread(target=serial_worker, args=(jukebox, args.serial), daemon=True).start()
-    server = ThreadingHTTPServer(("0.0.0.0", args.port), make_handler(jukebox, args.token))
-    LOG.info("web uploads available on port %d; music root %s", args.port, jukebox.root)
+    server = ThreadingHTTPServer((args.bind, args.port), make_handler(jukebox, args.token))
+    LOG.info("web uploads available on %s:%d; music root %s", args.bind, args.port, jukebox.root)
     server.serve_forever()
 
 
