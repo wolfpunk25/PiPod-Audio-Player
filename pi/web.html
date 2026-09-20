@@ -64,20 +64,43 @@ async function api(url, options={}) {
   }
   return data;
 }
-function uploadChunk(url, chunk, onProgress){
+function uploadChunk(url, chunk, onProgress, statusUrl, expectedOffset){
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let settled = false;
+    let pollTimer;
+    const finish = (ok, value) => {
+      if (settled) return;
+      settled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      if (ok && xhr.readyState !== 4) xhr.abort();
+      (ok ? resolve : reject)(value);
+    };
+    const checkSaved = async () => {
+      if (settled) return;
+      try {
+        const status = await api(statusUrl);
+        if (status.offset >= expectedOffset) {
+          finish(true, {offset: status.offset});
+          return;
+        }
+      } catch (_) {}
+      if (!settled) pollTimer = setTimeout(checkSaved, 1500);
+    };
     xhr.open("PUT", url);
     xhr.timeout = 45000;
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
     if (authRequired) xhr.setRequestHeader("Authorization", "Bearer " + token);
-    xhr.upload.onprogress = event => onProgress(event.loaded);
+    xhr.upload.onprogress = event => {
+      onProgress(event.loaded);
+      if (event.loaded >= chunk.size && !pollTimer) pollTimer = setTimeout(checkSaved, 1500);
+    };
     xhr.onload = () => {
       let data = {};
       try { data = JSON.parse(xhr.responseText); } catch (_) {}
       if (xhr.status >= 200 && xhr.status < 300) {
         onProgress(chunk.size);
-        resolve(data);
+        finish(true, data);
       } else {
         if (xhr.status === 401) {
           sessionStorage.removeItem("pipodToken");
@@ -85,12 +108,12 @@ function uploadChunk(url, chunk, onProgress){
         }
         const error = Error(data.error || `Upload failed (HTTP ${xhr.status})`);
         error.status = xhr.status;
-        reject(error);
+        finish(false, error);
       }
     };
-    xhr.onerror = () => reject(Error("Connection lost during upload"));
-    xhr.onabort = () => reject(Error("Upload stopped."));
-    xhr.ontimeout = () => reject(Error("Upload chunk timed out"));
+    xhr.onerror = () => finish(false, Error("Connection lost during upload"));
+    xhr.onabort = () => finish(false, Error("Upload stopped."));
+    xhr.ontimeout = () => finish(false, Error("Upload chunk timed out"));
     xhr.send(chunk);
   });
 }
@@ -127,7 +150,8 @@ async function uploadAudio(destination, name, file, onProgress){
     const end = Math.min(start + 2 * 1024 * 1024, file.size);
     const url = "/api/upload/chunk?" + query + "&offset=" + start;
     try {
-      const result = await uploadChunk(url, file.slice(start, end), sent => onProgress(start + sent));
+      const result = await uploadChunk(url, file.slice(start, end), sent => onProgress(start + sent),
+                                       statusUrl, end);
       if (result.offset <= start || result.offset > file.size) throw Error("Invalid upload progress from Pi.");
       offset = result.offset;
       failures = 0;
