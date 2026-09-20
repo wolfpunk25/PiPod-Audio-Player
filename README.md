@@ -80,4 +80,6 @@ Open `http://100.x.y.z:8080/` from a device connected to the tailnet. The upload
 
 The web page can upload individual songs or a complete album folder. On a computer, choose **Upload album folder** to keep its folder structure, including subfolders. On a phone or tablet, create an album folder in the web page, open it, select multiple songs, and choose **Upload files**. Each listed audio file and folder has a **Delete** button with a confirmation prompt. Deleting a folder permanently removes everything inside it, including subfolders. Existing files are never overwritten by an upload.
 
+Uploads run one file at a time. The web page shows progress within the current file and how many files are waiting. Large files are sent in 2 MB chunks with automatic retries. If a transfer stops, select the same file again in the same browser and press **Upload** to resume. PiPod keeps incomplete chunked transfers hidden until the final chunk arrives.
+
 The original sequencer firmware is saved locally under `backups/macropad-before-jukebox-2026-09-20/`. That directory is excluded from Git. Restore its `code.py` and `boot.py` to CIRCUITPY to return to the sequencer.

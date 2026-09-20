@@ -50,6 +50,9 @@ if (authRequired) sessionStorage.setItem("pipodToken", token);
 const $ = id => document.getElementById(id);
 const audioExtensions = new Set(["mp3","flac","m4a","m4b","aac","ogg","opus","wav","aiff","wma"]);
 function msg(value){ $("message").textContent = value; }
+function sizeLabel(bytes){
+  return bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 async function api(url, options={}) {
   options.headers = {...options.headers};
   if (authRequired) options.headers.Authorization = "Bearer " + token;
@@ -60,6 +63,86 @@ async function api(url, options={}) {
     throw Error(data.error || "Request failed");
   }
   return data;
+}
+function uploadChunk(url, chunk, onProgress){
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.timeout = 45000;
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    if (authRequired) xhr.setRequestHeader("Authorization", "Bearer " + token);
+    xhr.upload.onprogress = event => onProgress(event.loaded);
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch (_) {}
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress(chunk.size);
+        resolve(data);
+      } else {
+        if (xhr.status === 401) {
+          sessionStorage.removeItem("pipodToken");
+          sessionStorage.removeItem("jukeboxToken");
+        }
+        const error = Error(data.error || `Upload failed (HTTP ${xhr.status})`);
+        error.status = xhr.status;
+        reject(error);
+      }
+    };
+    xhr.onerror = () => reject(Error("Connection lost during upload"));
+    xhr.onabort = () => reject(Error("Upload stopped."));
+    xhr.ontimeout = () => reject(Error("Upload chunk timed out"));
+    xhr.send(chunk);
+  });
+}
+async function uploadAudio(destination, name, file, onProgress){
+  if (!file.size) throw Error("This file is empty.");
+  if (file.size > 4 * 1024 ** 3) throw Error("This file exceeds the 4 GB upload limit.");
+  const storageKey = `pipodUpload:${destination}/${name}:${file.size}:${file.lastModified}`;
+  let id;
+  try { id = localStorage.getItem(storageKey); } catch (_) {}
+  if (id && !/^[0-9a-f]{32}$/.test(id)) id = null;
+  const resuming = !!id;
+  if (!id) {
+    id = [...crypto.getRandomValues(new Uint8Array(16))]
+      .map(value => value.toString(16).padStart(2, "0")).join("");
+    try { localStorage.setItem(storageKey, id); } catch (_) {}
+  }
+  const query = "path=" + encodeURIComponent(destination) + "&name=" + encodeURIComponent(name) +
+                "&id=" + id + "&total=" + file.size;
+  const statusUrl = "/api/upload/status?" + query;
+  let offset = 0;
+  if (resuming) {
+    const status = await api(statusUrl);
+    if (status.complete) {
+      onProgress(file.size);
+      try { localStorage.removeItem(storageKey); } catch (_) {}
+      return;
+    }
+    offset = status.offset;
+    onProgress(offset);
+  }
+  let failures = 0;
+  while (offset < file.size) {
+    const start = offset;
+    const end = Math.min(start + 2 * 1024 * 1024, file.size);
+    const url = "/api/upload/chunk?" + query + "&offset=" + start;
+    try {
+      const result = await uploadChunk(url, file.slice(start, end), sent => onProgress(start + sent));
+      if (result.offset <= start || result.offset > file.size) throw Error("Invalid upload progress from Pi.");
+      offset = result.offset;
+      failures = 0;
+    } catch (error) {
+      if (error.status && error.status !== 409 && error.message !== "upload chunk ended early") throw error;
+      failures++;
+      if (failures > 3) throw Error("Upload paused after repeated connection failures. Press Upload again to resume.");
+      msg(`Connection interrupted; retrying chunk ${Math.ceil(start / (2 * 1024 * 1024)) + 1}…`);
+      await new Promise(resolve => setTimeout(resolve, failures * 1000));
+      const status = await api(statusUrl);
+      offset = status.complete ? file.size : status.offset;
+    }
+    onProgress(offset);
+  }
+  try { localStorage.removeItem(storageKey); } catch (_) {}
 }
 async function load(){
   try {
@@ -119,30 +202,47 @@ async function uploadFiles(files, albumMode){
   if (albumMode && tracks.some(({parts}) => parts.length < 2 || parts.some(part => !part || part === "." || part === ".." || part.startsWith(".")))){
     msg("The selected album contains an unsupported folder or file name.");return;
   }
+  const baseFolder = folder;
   $("progress").hidden=false;
   $("progress").value=0;
   const made = new Set();
-  for (let i=0;i<tracks.length;i++) {
-    const {file,parts}=tracks[i];
-    msg(`Uploading ${parts.join("/")} (${i+1}/${tracks.length})…`);
-    try {
-      let destination=folder;
-      for (const part of parts.slice(0,-1)) {
-        const next=[destination,part].filter(Boolean).join("/");
-        if (!made.has(next)) {
-          await api("/api/mkdir?path="+encodeURIComponent(destination)+"&name="+encodeURIComponent(part), {method:"POST"});
-          made.add(next);
+  const totalBytes = tracks.reduce((sum, track) => sum + track.file.size, 0);
+  let completedBytes = 0;
+  $("upload").disabled=true;
+  $("uploadAlbum").disabled=true;
+  try {
+    for (let i=0;i<tracks.length;i++) {
+      const {file,parts}=tracks[i];
+      const label = parts.join("/");
+      const progress = sent => {
+        const loaded = Math.min(sent, file.size);
+        $("progress").value = totalBytes ? Math.round(100 * (completedBytes + loaded) / totalBytes) : 0;
+        msg(loaded === file.size
+          ? `Finishing ${label} (${i+1} of ${tracks.length}); ${tracks.length-i-1} waiting…`
+          : `Uploading ${label}: ${sizeLabel(loaded)} of ${sizeLabel(file.size)} (${Math.round(100 * loaded / file.size)}%) — file ${i+1} of ${tracks.length}; ${tracks.length-i-1} waiting`);
+      };
+      progress(0);
+      try {
+        let destination=baseFolder;
+        for (const part of parts.slice(0,-1)) {
+          const next=[destination,part].filter(Boolean).join("/");
+          if (!made.has(next)) {
+            await api("/api/mkdir?path="+encodeURIComponent(destination)+"&name="+encodeURIComponent(part), {method:"POST"});
+            made.add(next);
+          }
+          destination=next;
         }
-        destination=next;
-      }
-      await api("/api/upload?path="+encodeURIComponent(destination)+"&name="+encodeURIComponent(parts.at(-1)),
-                {method:"POST",body:file,headers:{"Content-Type":"application/octet-stream"}});
-      $("progress").value=Math.round((i+1)*100/tracks.length);
-    } catch(e){msg(`${file.name}: ${e.message}`);return;}
+        await uploadAudio(destination, parts.at(-1), file, progress);
+        completedBytes += file.size;
+      } catch(e){msg(`${file.name}: ${e.message}`);return;}
+    }
+    $(albumMode ? "album" : "files").value="";
+    msg(`Uploaded ${tracks.length} audio file${tracks.length===1 ? "" : "s"}.`);
+    await load();
+  } finally {
+    $("upload").disabled=false;
+    $("uploadAlbum").disabled=false;
   }
-  $(albumMode ? "album" : "files").value="";
-  msg(`Uploaded ${tracks.length} audio file${tracks.length===1 ? "" : "s"}.`);
-  await load();
 }
 $("upload").onclick=async()=>{
   await uploadFiles([...$("files").files], false);

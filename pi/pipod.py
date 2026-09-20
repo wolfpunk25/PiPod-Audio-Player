@@ -11,6 +11,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 from http import HTTPStatus
@@ -21,6 +22,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 AUDIO = {".mp3", ".flac", ".m4a", ".m4b", ".aac", ".ogg", ".opus", ".wav", ".aiff", ".wma"}
 MAX_UPLOAD = 4 * 1024 ** 3
+UPLOAD_CHUNK = 2 * 1024 ** 2
 LOG = logging.getLogger("pipod")
 
 
@@ -87,6 +89,9 @@ class PiPod:
         self.position = 0
         self.screen = "browse"
         self.lock = threading.RLock()
+        self.upload_mutex = threading.Lock()
+        self.upload_locks = {}
+        self.completed_uploads = {}
         self.error = ""
         self.title_cache = {}
         self.media_cache = {}
@@ -98,6 +103,10 @@ class PiPod:
                               if isinstance(saved, dict) else {})
         except (OSError, ValueError):
             self.bookmarks = {}
+
+    def upload_lock(self, upload_id):
+        with self.upload_mutex:
+            return self.upload_locks.setdefault(upload_id, threading.Lock())
 
     def browse(self):
         with self.lock:
@@ -393,6 +402,25 @@ def private_bind(address):
 
 def make_handler(jukebox, token):
     class Handler(BaseHTTPRequestHandler):
+        def _chunk_paths(self, query):
+            rel = query.get("path", [""])[0]
+            name = query.get("name", [""])[0]
+            upload_id = query.get("id", [""])[0]
+            total = int(query.get("total", ["0"])[0])
+            if (not name or name in {".", ".."} or "/" in name or "\\" in name or
+                    name.startswith(".") or Path(name).suffix.lower() not in AUDIO):
+                raise ValueError("invalid audio file name")
+            if not re.fullmatch(r"[0-9a-f]{32}", upload_id):
+                raise ValueError("invalid upload ID")
+            if not 0 < total <= MAX_UPLOAD:
+                raise ValueError("invalid upload size")
+            folder = inside(jukebox.root, rel)
+            if not folder.is_dir():
+                raise ValueError("folder does not exist")
+            target = inside(folder, name)
+            temporary = folder / (".pipod-upload-" + upload_id)
+            return target, temporary, upload_id, total
+
         def _authorized(self):
             if not token:
                 return True
@@ -425,6 +453,19 @@ def make_handler(jukebox, token):
                 return
             if not self._require_auth():
                 return
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/upload/status":
+                try:
+                    target, temporary, upload_id, total = self._chunk_paths(parse_qs(parsed.query))
+                    with jukebox.upload_lock(upload_id):
+                        complete = target.exists() and jukebox.completed_uploads.get(upload_id) == (target, total)
+                        if target.exists() and not complete:
+                            raise ValueError("audio file already exists; delete it before uploading again")
+                        offset = total if complete else temporary.stat().st_size if temporary.exists() else 0
+                    self._json(200, {"offset": offset, "complete": complete})
+                except (ValueError, OSError) as exc:
+                    self._json(400, {"error": str(exc)})
+                return
             if self.path.startswith("/api/list?"):
                 try:
                     rel = parse_qs(urlparse(self.path).query).get("path", [""])[0]
@@ -445,12 +486,12 @@ def make_handler(jukebox, token):
                 return
             parsed = urlparse(self.path)
             query = parse_qs(parsed.query)
+            rel = query.get("path", [""])[0]
+            name = query.get("name", [""])[0]
             try:
-                rel = query.get("path", [""])[0]
                 folder = inside(jukebox.root, rel)
                 if not folder.is_dir():
                     raise ValueError("folder does not exist")
-                name = query.get("name", [""])[0]
                 if not name or name in {".", ".."} or "/" in name or "\\" in name or name.startswith("."):
                     raise ValueError("invalid name")
                 target = inside(folder, name)
@@ -462,13 +503,18 @@ def make_handler(jukebox, token):
                     if target.suffix.lower() not in AUDIO:
                         raise ValueError("unsupported audio file")
                     size = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < size <= MAX_UPLOAD:
-                        raise ValueError("invalid upload size")
-                    # Exclusive create prevents accidental replacement of an existing song.
-                    created = False
+                    if size <= 0:
+                        raise ValueError("upload is empty or its size is missing")
+                    if size > MAX_UPLOAD:
+                        raise ValueError("audio file exceeds the 4 GB upload limit")
+                    if target.exists() or target.is_symlink():
+                        raise ValueError("audio file already exists; delete it before uploading again")
+                    # Keep incomplete uploads hidden, then publish only the finished file.
+                    temporary = None
                     try:
-                        with target.open("xb") as output:
-                            created = True
+                        with tempfile.NamedTemporaryFile(mode="wb", dir=folder,
+                                                         prefix=".pipod-upload-", delete=False) as output:
+                            temporary = Path(output.name)
                             remaining = size
                             while remaining:
                                 chunk = self.rfile.read(min(1024 * 1024, remaining))
@@ -476,16 +522,74 @@ def make_handler(jukebox, token):
                                     raise ConnectionError("upload ended early")
                                 output.write(chunk)
                                 remaining -= len(chunk)
-                    except (OSError, ConnectionError):
-                        if created:
-                            target.unlink(missing_ok=True)
-                        raise
+                        # A hard link fails rather than overwriting a song added meanwhile.
+                        try:
+                            os.link(temporary, target)
+                        except FileExistsError:
+                            raise ValueError("audio file already exists; delete it before uploading again")
+                    finally:
+                        if temporary is not None:
+                            temporary.unlink(missing_ok=True)
                 else:
                     self._json(404, {"error": "Not found"})
                     return
                 self._json(201, {"ok": True})
             except (ValueError, OSError, ConnectionError) as exc:
+                if parsed.path == "/api/upload":
+                    LOG.warning("upload failed for %s/%s (%s bytes): %s",
+                                rel, name, self.headers.get("Content-Length", "unknown"), exc)
                 self._json(400, {"error": str(exc)})
+
+        def do_PUT(self):
+            if not self._require_auth():
+                return
+            parsed = urlparse(self.path)
+            if parsed.path != "/api/upload/chunk":
+                self._json(404, {"error": "Not found"})
+                return
+            try:
+                target, temporary, upload_id, total = self._chunk_paths(parse_qs(parsed.query))
+                offset = int(parse_qs(parsed.query).get("offset", ["-1"])[0])
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 <= offset < total or not 0 < size <= UPLOAD_CHUNK or offset + size > total:
+                    raise ValueError("invalid upload chunk")
+                with jukebox.upload_lock(upload_id):
+                    if target.exists() or target.is_symlink():
+                        raise ValueError("audio file already exists; delete it before uploading again")
+                    current = temporary.stat().st_size if temporary.exists() else 0
+                    if current != offset:
+                        self._json(409, {"error": "upload position changed", "offset": current})
+                        return
+                    if not temporary.exists():
+                        temporary.open("xb").close()
+                    self.connection.settimeout(30)
+                    try:
+                        with temporary.open("r+b") as output:
+                            output.seek(offset)
+                            remaining = size
+                            while remaining:
+                                chunk = self.rfile.read(min(256 * 1024, remaining))
+                                if not chunk:
+                                    raise ConnectionError("upload chunk ended early")
+                                output.write(chunk)
+                                remaining -= len(chunk)
+                    except (OSError, ConnectionError):
+                        with temporary.open("r+b") as output:
+                            output.truncate(offset)
+                        raise
+                    complete = offset + size == total
+                    if complete:
+                        os.link(temporary, target)
+                        temporary.unlink()
+                        jukebox.completed_uploads[upload_id] = (target, total)
+                    self._json(201 if complete else 200,
+                               {"offset": offset + size, "complete": complete})
+            except (ValueError, OSError, ConnectionError) as exc:
+                LOG.warning("upload chunk failed: %s", exc)
+                try:
+                    self._json(400, {"error": str(exc)})
+                except OSError:
+                    pass
 
         def do_DELETE(self):
             if not self._require_auth():

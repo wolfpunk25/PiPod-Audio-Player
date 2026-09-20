@@ -1,5 +1,6 @@
 import http.client
 import json
+import socket
 import tempfile
 import threading
 import unittest
@@ -8,7 +9,7 @@ from pathlib import Path
 from urllib.parse import unquote
 from unittest.mock import patch
 
-from pi.pipod import PiPod, entries, inside, make_handler, private_bind, status_file_path
+from pi.pipod import PiPod, UPLOAD_CHUNK, entries, inside, make_handler, private_bind, status_file_path
 
 
 class FakeVLC:
@@ -231,6 +232,7 @@ class PiPodTests(unittest.TestCase):
             conn.request("POST", "/api/upload?path=New&name=Book.m4b", body=b"book", headers=headers)
             self.assertEqual(conn.getresponse().status, 201)
             self.assertEqual((self.root / "New" / "Song.mp3").read_bytes(), b"music")
+            self.assertFalse(list((self.root / "New").glob(".pipod-upload-*")))
             conn.request("POST", "/api/upload?path=New&name=Song.mp3", body=b"replacement", headers=headers)
             self.assertEqual(conn.getresponse().status, 400)
             self.assertEqual((self.root / "New" / "Song.mp3").read_bytes(), b"music")
@@ -249,6 +251,75 @@ class PiPodTests(unittest.TestCase):
             conn.request("DELETE", "/api/file?path=..%2Fignored.txt", headers=headers)
             self.assertEqual(conn.getresponse().status, 400)
             self.assertTrue((self.root / "ignored.txt").exists())
+            conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_interrupted_upload_leaves_no_partial_audio_file(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.jukebox, "0123456789abcdef"))
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            with socket.create_connection(("127.0.0.1", server.server_port)) as conn:
+                conn.sendall(
+                    b"POST /api/upload?path=Album&name=Interrupted.m4b HTTP/1.1\r\n"
+                    b"Host: 127.0.0.1\r\n"
+                    b"Authorization: Bearer 0123456789abcdef\r\n"
+                    b"Content-Length: 20\r\n\r\npartial")
+                conn.shutdown(socket.SHUT_WR)
+                self.assertIn(b"400", conn.recv(1024))
+            self.assertFalse((self.root / "Album" / "Interrupted.m4b").exists())
+            self.assertFalse(list((self.root / "Album").glob(".pipod-upload-*")))
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_large_upload_resumes_after_interrupted_chunk(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.jukebox, "0123456789abcdef"))
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            data = b"a" * UPLOAD_CHUNK + b"b" * UPLOAD_CHUNK + b"end"
+            query = "path=Album&name=Large.m4b&id=" + "a" * 32 + "&total=" + str(len(data))
+            headers = {"Authorization": "Bearer 0123456789abcdef"}
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_port)
+            conn.request("PUT", "/api/upload/chunk?" + query + "&offset=0",
+                         body=data[:UPLOAD_CHUNK], headers=headers)
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read())["offset"], UPLOAD_CHUNK)
+            self.assertFalse((self.root / "Album" / "Large.m4b").exists())
+            conn.request("GET", "/api/upload/status?" + query, headers=headers)
+            self.assertEqual(json.loads(conn.getresponse().read())["offset"], UPLOAD_CHUNK)
+            with socket.create_connection(("127.0.0.1", server.server_port)) as broken:
+                broken.sendall((
+                    "PUT /api/upload/chunk?" + query + "&offset=" + str(UPLOAD_CHUNK) + " HTTP/1.1\r\n"
+                    "Host: 127.0.0.1\r\n"
+                    "Authorization: Bearer 0123456789abcdef\r\n"
+                    "Content-Length: " + str(UPLOAD_CHUNK) + "\r\n\r\n").encode() + b"partial")
+                broken.shutdown(socket.SHUT_WR)
+                self.assertIn(b"400", broken.recv(1024))
+            conn.request("GET", "/api/upload/status?" + query, headers=headers)
+            self.assertEqual(json.loads(conn.getresponse().read())["offset"], UPLOAD_CHUNK)
+            conn.request("PUT", "/api/upload/chunk?" + query + "&offset=" + str(UPLOAD_CHUNK),
+                         body=data[UPLOAD_CHUNK:2 * UPLOAD_CHUNK], headers=headers)
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)
+            response.read()
+            conn.request("PUT", "/api/upload/chunk?" + query + "&offset=" + str(2 * UPLOAD_CHUNK),
+                         body=b"end", headers=headers)
+            response = conn.getresponse()
+            self.assertEqual(response.status, 201)
+            response.read()
+            self.assertEqual((self.root / "Album" / "Large.m4b").read_bytes(), data)
+            conn.request("GET", "/api/upload/status?" + query, headers=headers)
+            self.assertTrue(json.loads(conn.getresponse().read())["complete"])
+            conn.request("GET", "/api/upload/status?" + query.replace("a" * 32, "b" * 32), headers=headers)
+            response = conn.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
+            self.assertFalse(list((self.root / "Album").glob(".pipod-upload-*")))
             conn.close()
         finally:
             server.shutdown()
