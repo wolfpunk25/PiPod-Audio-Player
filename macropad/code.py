@@ -24,13 +24,28 @@ pad.pixels[9] = 0x2244AA  # previous
 pad.pixels[10] = 0x2244AA # next
 pad.pixels[11] = 0x884400 # quieter
 
-group = displayio.Group()
-lines = []
+browse_group = displayio.Group()
+browse_lines = []
 for y in (0, 11, 22, 33, 44, 55):
     line = label.Label(terminalio.FONT, text="", color=0xFFFFFF, x=0, y=y + 4)
-    group.append(line)
-    lines.append(line)
-pad.display.root_group = group
+    browse_group.append(line)
+    browse_lines.append(line)
+
+now_group = displayio.Group()
+now_heading = label.Label(terminalio.FONT, text="NOW PLAYING", color=0xFFFFFF, x=0, y=4)
+now_title_first = label.Label(terminalio.FONT, text="", color=0xFFFFFF, scale=2, x=0, y=29)
+now_title_second = label.Label(terminalio.FONT, text="", color=0xFFFFFF, scale=2, x=0, y=45)
+now_footer = label.Label(terminalio.FONT, text="", color=0xFFFFFF, x=0, y=59)
+for item in (now_heading, now_title_first, now_title_second, now_footer):
+    now_group.append(item)
+icon_bitmap = displayio.Bitmap(24, 21, 2)
+icon_palette = displayio.Palette(2)
+icon_palette[0] = 0x000000
+icon_palette[1] = 0xFFFFFF
+now_group.append(displayio.TileGrid(icon_bitmap, pixel_shader=icon_palette, x=104, y=0))
+
+pad.display.root_group = browse_group
+active_group = browse_group
 
 serial = usb_cdc.data
 buffer = bytearray()
@@ -40,6 +55,11 @@ last_draw = 0
 held_keys = set()
 last_play_color = None
 show_address = False
+shown_title = None
+title_started = 0
+last_title_offset = None
+last_title_refresh = 0
+last_icon_state = None
 
 
 def send(command):
@@ -70,7 +90,71 @@ def update_play_light():
         last_play_color = color
 
 
+def draw_icon(playback_state):
+    global last_icon_state
+    if playback_state == last_icon_state:
+        return
+    last_icon_state = playback_state
+    icon_bitmap.fill(0)
+    for x in range(24):
+        icon_bitmap[x, 0] = 1
+        icon_bitmap[x, 20] = 1
+    for y in range(21):
+        icon_bitmap[0, y] = 1
+        icon_bitmap[23, y] = 1
+    if playback_state == "playing":
+        for y in range(4, 17):
+            for x in range(6, 7 + 2 * (6 - abs(y - 10))):
+                icon_bitmap[x, y] = 1
+    elif playback_state == "paused":
+        for y in range(4, 17):
+            for x in (7, 8, 9, 14, 15, 16):
+                icon_bitmap[x, y] = 1
+    elif playback_state == "stopped":
+        for y in range(5, 16):
+            for x in range(7, 17):
+                icon_bitmap[x, y] = 1
+
+
+def draw_now():
+    global shown_title, title_started, last_title_offset
+    title = " ".join(str(state.get("title", "")).split())
+    if title != shown_title:
+        shown_title = title
+        title_started = time.monotonic()
+        last_title_offset = None
+    if len(title) > 20:
+        elapsed = time.monotonic() - title_started
+        offset = 0 if elapsed < 2 else int((elapsed - 2) / 0.4) % (len(title) + 4)
+        visible = (title + "    " + title)[offset:offset + 20]
+    else:
+        offset = 0
+        visible = title
+    if offset != last_title_offset:
+        now_title_first.text = visible[:10].rstrip()
+        now_title_second.text = visible[10:20].strip()
+        last_title_offset = offset
+    footer = clip("%s/%s V:%s" % (
+        clock(state.get("elapsed", 0)), clock(state.get("length", 0)),
+        state.get("volume", 0)))
+    if state.get("error"):
+        footer = clip(state["error"])
+    if now_footer.text != footer:
+        now_footer.text = footer
+    draw_icon(state.get("state", ""))
+
+
 def draw():
+    global active_group
+    if not show_address and state and state.get("type") == "now":
+        if active_group is not now_group:
+            pad.display.root_group = now_group
+            active_group = now_group
+        draw_now()
+        return
+    if active_group is not browse_group:
+        pad.display.root_group = browse_group
+        active_group = browse_group
     if show_address:
         url = state.get("web_url", "") if state else ""
         if url and "://" in url and ":" in url.split("://", 1)[1]:
@@ -87,14 +171,9 @@ def draw():
                   ("> " if state.get("directory") else "♫ ") + clip(state.get("name", ""), 19),
                   "%s / %s" % (state.get("index", 0), state.get("count", 0)),
                   "Knob: browse/enter", "5: back  6: album"]
-    else:
-        values = ["NOW PLAYING", clip(state.get("title", "")),
-                  clip(state.get("state", "")),
-                  "%s / %s" % (clock(state.get("elapsed", 0)), clock(state.get("length", 0))),
-                  "Vol: %s" % state.get("volume", 0), "4: folders 9/12:vol"]
     if not show_address and state and state.get("error"):
         values[5] = clip(state["error"])
-    for line, value in zip(lines, values):
+    for line, value in zip(browse_lines, values):
         line.text = clip(value)
 
 
@@ -143,4 +222,8 @@ while True:
             else:
                 buffer = bytearray()
     update_play_light()
+    if not show_address and state and state.get("type") == "now":
+        if time.monotonic() - last_title_refresh >= 0.2:
+            draw_now()
+            last_title_refresh = time.monotonic()
     time.sleep(0.01)
