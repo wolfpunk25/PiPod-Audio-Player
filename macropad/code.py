@@ -59,9 +59,6 @@ held_keys = set()
 last_play_color = None
 show_address = False
 shown_title = None
-title_started = 0
-last_title_offset = None
-last_title_refresh = 0
 last_icon_state = None
 
 
@@ -137,38 +134,45 @@ def draw_title_glyph(character, left, top):
                 title_bitmap[left + x, top + y] = 1
 
 
+def title_lines(text):
+    lines = ["", ""]
+    row = 0
+    for word in text.split():
+        candidate = (lines[row] + " " + word) if lines[row] else word
+        if len(candidate) <= 14:
+            lines[row] = candidate
+        elif row == 0 and lines[0]:
+            row = 1
+            if len(word) <= 14:
+                lines[row] = word
+            else:
+                lines[row] = "..."
+                break
+        elif row == 1:
+            while lines[1] and len(lines[1]) + 3 > 14:
+                lines[1] = lines[1].rsplit(" ", 1)[0] if " " in lines[1] else ""
+            lines[1] = (lines[1] + "...") if lines[1] else "..."
+            break
+        else:
+            # An individual word wider than the display has no word boundary.
+            lines[0] = word[:11] + "..."
+            break
+    return lines
+
+
 def draw_title(text):
     title_bitmap.fill(0)
-    if len(text) <= 28 and len(text) > 14:
-        break_at = text.rfind(" ", 0, 15)
-        if break_at >= 6 and len(text[break_at + 1:]) <= 14:
-            first, second = text[:break_at], text[break_at + 1:]
-        else:
-            first, second = text[:14].rstrip(), text[14:28].lstrip()
-    else:
-        first, second = text[:14].rstrip(), text[14:28].lstrip()
-    for row, part in enumerate((first, second)):
+    for row, part in enumerate(title_lines(text)):
         for position, character in enumerate(part):
             draw_title_glyph(character, position * 9, row * 16)
 
 
 def draw_now():
-    global shown_title, title_started, last_title_offset
+    global shown_title
     title = " ".join(str(state.get("title", "")).split())
     if title != shown_title:
         shown_title = title
-        title_started = time.monotonic()
-        last_title_offset = None
-    if len(title) > 28:
-        elapsed = time.monotonic() - title_started
-        offset = 0 if elapsed < 2 else int((elapsed - 2) / 0.4) % (len(title) + 4)
-        visible = (title + "    " + title)[offset:offset + 28]
-    else:
-        offset = 0
-        visible = title
-    if offset != last_title_offset:
-        draw_title(visible)
-        last_title_offset = offset
+        draw_title(title)
     footer = clip("%s/%s V:%s" % (
         clock(state.get("elapsed", 0)), clock(state.get("length", 0)),
         state.get("volume", 0)))
@@ -257,8 +261,4 @@ while True:
             else:
                 buffer = bytearray()
     update_play_light()
-    if not show_address and state and state.get("type") == "now":
-        if time.monotonic() - last_title_refresh >= 0.2:
-            draw_now()
-            last_title_refresh = time.monotonic()
     time.sleep(0.01)
