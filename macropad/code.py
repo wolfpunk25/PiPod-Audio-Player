@@ -33,11 +33,14 @@ for y in (0, 11, 22, 33, 44, 55):
 
 now_group = displayio.Group()
 now_heading = label.Label(terminalio.FONT, text="NOW PLAYING", color=0xFFFFFF, x=0, y=4)
-now_title_first = label.Label(terminalio.FONT, text="", color=0xFFFFFF, scale=2, x=0, y=29)
-now_title_second = label.Label(terminalio.FONT, text="", color=0xFFFFFF, scale=2, x=0, y=45)
 now_footer = label.Label(terminalio.FONT, text="", color=0xFFFFFF, x=0, y=59)
-for item in (now_heading, now_title_first, now_title_second, now_footer):
-    now_group.append(item)
+now_group.append(now_heading)
+title_bitmap = displayio.Bitmap(128, 32, 2)
+title_palette = displayio.Palette(2)
+title_palette[0] = 0x000000
+title_palette[1] = 0xFFFFFF
+now_group.append(displayio.TileGrid(title_bitmap, pixel_shader=title_palette, x=0, y=22))
+now_group.append(now_footer)
 icon_bitmap = displayio.Bitmap(24, 21, 2)
 icon_palette = displayio.Palette(2)
 icon_palette[0] = 0x000000
@@ -116,6 +119,39 @@ def draw_icon(playback_state):
                 icon_bitmap[x, y] = 1
 
 
+def draw_title_glyph(character, left, top):
+    """Draw terminalio's 6×8 glyph at 9×12, halfway between its 1× and 2× sizes."""
+    glyph = terminalio.FONT.get_glyph(ord(character))
+    if glyph is None:
+        glyph = terminalio.FONT.get_glyph(ord("?"))
+    if glyph is None:
+        return
+    font_width, font_height = terminalio.FONT.get_bounding_box()
+    columns = glyph.bitmap.width // font_width
+    source_x = (glyph.tile_index % columns) * font_width
+    source_y = (glyph.tile_index // columns) * font_height
+    for y in range(12):
+        for x in range(9):
+            if glyph.bitmap[source_x + x * font_width // 9,
+                            source_y + y * font_height // 12]:
+                title_bitmap[left + x, top + y] = 1
+
+
+def draw_title(text):
+    title_bitmap.fill(0)
+    if len(text) <= 28 and len(text) > 14:
+        break_at = text.rfind(" ", 0, 15)
+        if break_at >= 6 and len(text[break_at + 1:]) <= 14:
+            first, second = text[:break_at], text[break_at + 1:]
+        else:
+            first, second = text[:14].rstrip(), text[14:28].lstrip()
+    else:
+        first, second = text[:14].rstrip(), text[14:28].lstrip()
+    for row, part in enumerate((first, second)):
+        for position, character in enumerate(part):
+            draw_title_glyph(character, position * 9, row * 16)
+
+
 def draw_now():
     global shown_title, title_started, last_title_offset
     title = " ".join(str(state.get("title", "")).split())
@@ -123,16 +159,15 @@ def draw_now():
         shown_title = title
         title_started = time.monotonic()
         last_title_offset = None
-    if len(title) > 20:
+    if len(title) > 28:
         elapsed = time.monotonic() - title_started
         offset = 0 if elapsed < 2 else int((elapsed - 2) / 0.4) % (len(title) + 4)
-        visible = (title + "    " + title)[offset:offset + 20]
+        visible = (title + "    " + title)[offset:offset + 28]
     else:
         offset = 0
         visible = title
     if offset != last_title_offset:
-        now_title_first.text = visible[:10].rstrip()
-        now_title_second.text = visible[10:20].strip()
+        draw_title(visible)
         last_title_offset = offset
     footer = clip("%s/%s V:%s" % (
         clock(state.get("elapsed", 0)), clock(state.get("length", 0)),
