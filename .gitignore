@@ -1,4 +1,3 @@
-backups/
 __pycache__/
 *.pyc
 pipod.env
